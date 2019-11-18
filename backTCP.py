@@ -105,14 +105,10 @@ def send(data, addr, port):
 
     chunks = [data[x * 64:x * 64 + 64] for x in range((len(data) - 1) // 64 + 1)]
     packets = [BTcpPacket(seq=i & 0xFF, data_off=7, data=chunk) for i, chunk in enumerate(chunks)]
-    data_length = len(packets)
 
-    # TODO: "data" is a bytes object
-    #       You should split it up into BTcpPacket objects, and call conn.send(pkt) on each one
-    # Example: > p = BTcpPacket(data=b"hello")
-    #          > conn.send(p)
+    data_length = len(packets)  # The number of packets
 
-    N = 5
+    N = 8  # Send buffer is 512 bytes (8 packets)
     base, next_seq = 0, 0
 
     for i in range(N):
@@ -120,28 +116,34 @@ def send(data, addr, port):
         next_seq += 1
         conn.send(packets[i])  # Send the first N packets
 
-    conn.settimeout(0.05)
+    conn.settimeout(0.01)  # Timeout is 10 ms
     while True:
         try:
-            p = conn.recv()
+            p = conn.recv()  # Try receiving an ACK
         except socket.timeout:
             # A timeout event must have happened
             log('info', 'SEND: Timeout for pkt {}'.format(base))
             for i in range(N):
                 if base + i >= data_length:
                     break
-                log('info', 'SEND: Send packet: {}'.format(packets[base+i]))
-                conn.send(packets[base + i])  # Resend the N packets
+                p = packets[base+i]
+                p.flag = 1  # flag is 1 for retransimission packets
+                log('info', 'SEND: Send packet: {}'.format(p))
+                conn.send(p)  # Resend the N packets
         else:
+            # We have to mod 256 because the seqnum ranges from 0-255,
+            # which is not enough for 1024 packets.
             distance = (p.ack + 256 - base % 256) % 256
             log('info', 'Distance is {}'.format(distance))
             if distance >= 0 and distance < N:
                 log('info', 'SEND: Received ack {} when base is {}'.format(p.ack, base))
-                base += (p.ack + 256 - base) % 256 + 1
+                base += (p.ack + 256 - base) % 256 + 1  # Increments base
+
                 if base >= data_length:
-                    break
+                    break  # End of data
 
                 while next_seq < data_length and next_seq != base + N:
+                    # Send new packets
                     log('info', 'SEND: Send packet: {}'.format(packets[next_seq]))
                     conn.send(packets[next_seq])
                     next_seq += 1
@@ -152,16 +154,8 @@ def send(data, addr, port):
 def recv(addr, port):
     conn = BTcpConnection('recv', addr, port)
 
-    cur_ack = -1 # Next packet to be received has sequence number 0
+    cur_ack = -1  # Next packet to be received has sequence number 0
     data = b''  # Nothing received yet
-
-    # TODO: Call conn.recv to receive packets
-    #       Received packets are of class BTcpPacket, so you can access packet information and content easily
-    # Example: > p = conn.recv()
-    #          Now p.seq, p.ack, p.data (and everything else) are available
-
-    # TODO: Assemble received binary data into `data` variable.
-    #       Make sure you're handling disorder and timeouts properly
 
     conn.settimeout(0.010)  # 10ms timeout
     while True:
@@ -171,12 +165,12 @@ def recv(addr, port):
             break
 
         if p.seq == (cur_ack + 1) & 0xFF:
+            # Increments cur_ack and deliver data packet only when 
+            # the received packet is the (cur_ack + 1)th packet
             log('info', 'RECV: cur_ack becomes {}'.format(cur_ack+1))
             data += p.data
             cur_ack = (cur_ack + 1) & 0xff
 
         conn.send(BTcpPacket(ack=cur_ack))
-
-    # End of your own code
 
     return data
